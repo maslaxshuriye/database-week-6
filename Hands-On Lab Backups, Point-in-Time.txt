@@ -1,0 +1,220 @@
+Hands-On Lab: Backups, Point-in-Time Recovery, and Replication
+Objective
+
+The objective of this lab was to implement PostgreSQL backup, recovery, and replication procedures. I created and verified a logical backup, configured WAL archiving, created a physical base backup, simulated accidental data deletion, performed Point-in-Time Recovery (PITR), configured a streaming standby replica, and monitored replication health.
+
+Step 1: Logical Backup
+
+I started by creating a directory to store the backups:
+
+mkdir -p ~/backups
+
+
+I created a custom-format logical backup of the bootcamp database:
+
+pg_dump -Fc -f ~/backups/bootcamp.dump bootcamp
+
+
+I verified that the backup was created successfully:
+
+ls -lh ~/backups/bootcamp.dump
+
+
+I inspected the backup contents using:
+
+pg_restore --list ~/backups/bootcamp.dump | head
+
+
+The backup contained the database objects, confirming that the backup file was valid and readable.
+
+To verify that the backup could be restored successfully, I created a test database:
+
+createdb bootcamp_check
+
+
+I restored the backup into the test database:
+
+pg_restore -d bootcamp_check ~/backups/bootcamp.dump
+
+
+I then connected to the restored database and verified the tables:
+
+psql bootcamp_check
+
+\dt
+SELECT count(*) FROM students;
+
+
+The database was successfully restored and the student records were available. This confirmed that the logical backup could be used for recovery.
+
+Step 2: WAL Archiving and Base Backup
+
+I created a directory for archived WAL files:
+
+mkdir -p ~/backups/wal
+
+
+I checked the PostgreSQL configuration file location:
+
+psql -d postgres -c "SHOW config_file;"
+
+
+I updated postgresql.conf with the following settings:
+
+wal_level = replica
+archive_mode = on
+archive_command = 'cp %p /home/$USER/backups/wal/%f'
+
+
+I restarted PostgreSQL to apply the configuration:
+
+sudo systemctl restart postgresql
+
+
+I verified the WAL configuration:
+
+psql -d postgres -c "SHOW wal_level;"
+psql -d postgres -c "SHOW archive_mode;"
+psql -d postgres -c "SHOW archive_command;"
+
+
+The results confirmed that WAL level was set to replica, archive mode was enabled, and an archive command was configured.
+
+I then created a physical base backup:
+
+pg_basebackup -D ~/backups/base -Ft -z -Xs -P
+
+
+I verified the backup files:
+
+ls -lh ~/backups/base
+
+
+The physical base backup was created successfully and could be used as the starting point for Point-in-Time Recovery.
+
+Step 3: Simulated Disaster and Point-in-Time Recovery
+
+Before making any destructive change, I recorded the current database time:
+
+SELECT now();
+
+
+I also checked the number of student records before the simulated disaster:
+
+SELECT count(*) FROM students;
+
+
+The current timestamp was recorded as the recovery target.
+
+I then simulated an accidental deletion:
+
+DELETE FROM students;
+
+
+I verified that the records had been deleted:
+
+SELECT count(*) FROM students;
+
+
+The result showed that the student records were no longer available, simulating a database disaster.
+
+I stopped PostgreSQL before beginning the recovery process:
+
+sudo systemctl stop postgresql
+
+
+I restored the database from the physical base backup and configured PostgreSQL to replay the archived WAL files.
+
+The recovery configuration was set using:
+
+restore_command = 'cp /home/$USER/backups/wal/%f %p'
+recovery_target_time = '<RECOVERY_TIMESTAMP>'
+
+
+where <RECOVERY_TIMESTAMP> represented the timestamp recorded immediately before the accidental deletion.
+
+I then started PostgreSQL:
+
+sudo systemctl start postgresql
+
+
+I checked the PostgreSQL service:
+
+sudo systemctl status postgresql
+
+
+After recovery completed, I connected to the bootcamp database:
+
+psql bootcamp
+
+
+I verified the student records:
+
+SELECT count(*) FROM students;
+
+
+The student records that existed before the accidental deletion were recovered. This confirmed that Point-in-Time Recovery was successful.
+
+Step 4: Streaming Replication Standby
+
+I created a dedicated replication user on the primary server:
+
+CREATE ROLE replicator
+WITH REPLICATION LOGIN PASSWORD 'reppass';
+
+
+I configured pg_hba.conf to allow the replication user to connect from the local machine:
+
+host replication replicator 127.0.0.1/32 md5
+
+
+I restarted PostgreSQL:
+
+sudo systemctl restart postgresql
+
+
+I created a separate directory for the standby:
+
+mkdir -p ~/standby
+
+
+I then created the standby using pg_basebackup:
+
+pg_basebackup -h 127.0.0.1 -U replicator -D ~/standby -R -P
+
+
+The -R option configured the standby to connect to the primary server for streaming replication.
+
+I verified the standby directory:
+
+ls -lah ~/standby
+
+
+The standby database files were created successfully.
+
+Step 5: Replication Health Monitoring
+
+Finally, I checked the replication status from the primary server using:
+
+SELECT application_name,
+       state,
+       pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag_bytes
+FROM pg_stat_replication;
+
+
+The query displayed the connected standby, its current replication state, and the replication lag in bytes.
+
+A healthy standby should show a state such as:
+
+streaming
+
+
+The replication monitoring confirmed that the standby was connected to the primary and receiving WAL changes.
+
+Final Result
+
+The lab was completed successfully. A logical backup of the bootcamp database was created and restored successfully. WAL archiving was configured and a physical base backup was created. A simulated data-loss event was recovered using Point-in-Time Recovery. A replication user was created and a streaming standby was configured using pg_basebackup. Finally, the replication status and lag were monitored using PostgreSQL's pg_stat_replication view.
+
+This lab demonstrated the importance of using multiple layers of PostgreSQL data protection. Logical backups provide convenient database-level recovery, physical base backups provide a foundation for full recovery, WAL archiving enables Point-in-Time Recovery, and streaming replication provides a continuously updated standby database for improved availability and disaster recovery.
+
+Conclusion: PostgreSQL backup, Point-in-Time Recovery, and streaming replication were successfully implemented and verified.
